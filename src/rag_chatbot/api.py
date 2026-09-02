@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+import base64
+import json
 import os
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from .chat_pipeline import answer_question
 from .config import load_settings
-from fastapi import Request
 
 
 load_dotenv()
@@ -19,6 +20,18 @@ app = FastAPI(
 )
 
 settings = load_settings()
+
+
+ROLE_TO_RAG_GROUPS = {
+    "Rag.Employee": "All-Employees",
+    "Rag.Manager": "Managers",
+    "Rag.HR": "HR",
+    "Rag.ITAdmin": "IT-Admins",
+    "Rag.Security": "Security",
+    "Rag.Engineering": "Engineering",
+    "Rag.Finance": "Finance",
+    "Rag.Legal": "Legal",
+}
 
 
 class ChatRequest(BaseModel):
@@ -40,27 +53,72 @@ class ChatResponse(BaseModel):
     citations: list[CitationResponse]
 
 
-def development_user_groups() -> list[str]:
+def extract_entra_roles(request: Request) -> list[str]:
     """
-    Temporary local-development authorization.
-    Replace this function with validated Entra roles in the next step.
+    Extract Entra app roles from the X-MS-CLIENT-PRINCIPAL header
+    injected by Azure Container Apps Easy Auth.
     """
-    environment = os.getenv("APP_ENV", "development")
 
-    if environment != "development":
+    encoded_principal = request.headers.get(
+        "x-ms-client-principal"
+    )
+
+    if not encoded_principal:
         raise HTTPException(
-            status_code=503,
-            detail="Microsoft Entra authentication is not configured yet.",
+            status_code=401,
+            detail="Authenticated Entra identity is missing.",
         )
 
-    return [
-        group.strip()
-        for group in os.getenv(
-            "RAG_DEV_GROUPS",
-            "All-Employees",
-        ).split(",")
-        if group.strip()
+    try:
+        decoded_principal = base64.b64decode(
+            encoded_principal
+        )
+
+        principal = json.loads(
+            decoded_principal.decode("utf-8")
+        )
+
+    except (
+        ValueError,
+        json.JSONDecodeError,
+        UnicodeDecodeError,
+    ) as error:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid Entra identity information.",
+        ) from error
+
+    roles = [
+        claim["val"]
+        for claim in principal.get("claims", [])
+        if claim.get("typ") == "roles"
+        and claim.get("val")
     ]
+
+    return roles
+
+
+def get_rag_groups(request: Request) -> list[str]:
+    """
+    Convert Entra application roles into internal
+    RAG access groups used by Weaviate.
+    """
+
+    roles = extract_entra_roles(request)
+
+    rag_groups = {
+        ROLE_TO_RAG_GROUPS[role]
+        for role in roles
+        if role in ROLE_TO_RAG_GROUPS
+    }
+
+    if not rag_groups:
+        raise HTTPException(
+            status_code=403,
+            detail="User has no authorized RAG access role.",
+        )
+
+    return sorted(rag_groups)
 
 
 @app.get("/")
@@ -70,17 +128,29 @@ def root() -> dict[str, str]:
         "docs": "/docs",
     }
 
+
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+    }
 
 
-@app.post("/chat", response_model=ChatResponse)
-def chat(payload: ChatRequest) -> ChatResponse:
+@app.post(
+    "/chat",
+    response_model=ChatResponse,
+)
+def chat(
+    payload: ChatRequest,
+    request: Request,
+) -> ChatResponse:
+
+    user_groups = get_rag_groups(request)
+
     try:
         result = answer_question(
             question=payload.question,
-            user_groups=development_user_groups(),
+            user_groups=user_groups,
             settings=settings,
         )
 
@@ -97,15 +167,13 @@ def chat(payload: ChatRequest) -> ChatResponse:
         )
 
     except ConnectionError as error:
-        raise HTTPException(status_code=503, detail=str(error)) from error
+        raise HTTPException(
+            status_code=503,
+            detail=str(error),
+        ) from error
 
     except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-
-@app.get("/debug-auth")
-def debug_auth(request: Request):
-    return {
-        "principal": request.headers.get("x-ms-client-principal"),
-        "principal_id": request.headers.get("x-ms-client-principal-id"),
-        "principal_name": request.headers.get("x-ms-client-principal-name"),
-    }
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        ) from error

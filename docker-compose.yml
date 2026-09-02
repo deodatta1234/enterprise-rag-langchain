@@ -1,0 +1,22 @@
+services:
+  weaviate:
+    image: cr.weaviate.io/semitechnologies/weaviate:1.39.1
+    container_name: enterprise-rag-weaviate
+    restart: unless-stopped
+
+    ports:
+      - "8080:8080"   # HTTP API
+      - "50051:50051" # gRPC API required by the Weaviate Python v4 client
+
+    environment:
+      QUERY_DEFAULTS_LIMIT: "25"
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "true"
+      PERSISTENCE_DATA_PATH: "/var/lib/weaviate"
+      DEFAULT_VECTORIZER_MODULE: "none"
+      CLUSTER_HOSTNAME: "node1"
+
+    volumes:
+      - weaviate_data:/var/lib/weaviate
+
+volumes:
+  weaviate_data:

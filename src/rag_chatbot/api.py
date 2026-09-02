@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from .chat_pipeline import answer_question
 from .config import load_settings
+from fastapi import Request
 
 
 load_dotenv()
@@ -100,3 +101,11 @@ def chat(payload: ChatRequest) -> ChatResponse:
 
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+
+@app.get("/debug-auth")
+def debug_auth(request: Request):
+    return {
+        "principal": request.headers.get("x-ms-client-principal"),
+        "principal_id": request.headers.get("x-ms-client-principal-id"),
+        "principal_name": request.headers.get("x-ms-client-principal-name"),
+    }

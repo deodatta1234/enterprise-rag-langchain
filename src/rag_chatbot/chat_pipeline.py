@@ -1,6 +1,4 @@
 from __future__ import annotations
-
-import os
 from dataclasses import dataclass
 
 from langchain_core.documents import Document
@@ -160,10 +158,7 @@ def build_rag_chain(
     )
 
     model = ChatOpenAI(
-        model=os.getenv(
-            "CHAT_MODEL",
-            "gpt-4.1-mini",
-        ),
+        model=settings.chat_model,
         temperature=0,
     )
 

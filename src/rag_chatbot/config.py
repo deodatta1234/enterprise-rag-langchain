@@ -17,6 +17,7 @@ class Settings:
     weaviate_host: str
     weaviate_port: int
     weaviate_grpc_port: int
+    chat_model: str
     embedding_model: str
     chunk_size: int
     chunk_overlap: int
@@ -34,7 +35,12 @@ def load_settings() -> Settings:
         weaviate_host=os.getenv("WEAVIATE_HOST", "localhost"),
         weaviate_port=int(os.getenv("WEAVIATE_HTTP_PORT", os.getenv("WEAVIATE_PORT", "8080"))),
         weaviate_grpc_port=int(os.getenv("WEAVIATE_GRPC_PORT", "50051")),
-        embedding_model=os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
+        chat_model=os.getenv("CHAT_MODEL", "gpt-5.6-sol"),
+        embedding_model=(
+            os.getenv("EMBED_MODEL")
+            or os.getenv("OPENAI_EMBEDDING_MODEL")
+            or "text-embedding-3-small"
+        ),
         chunk_size=int(os.getenv("RAG_CHUNK_SIZE", "900")),
         chunk_overlap=int(os.getenv("RAG_CHUNK_OVERLAP", "150")),
     )

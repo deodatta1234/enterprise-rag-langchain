@@ -402,9 +402,7 @@ def answer_question(
     finally:
         client.close()
 
-    documents = result[
-        "documents"
-    ]
+    documents = result["documents"]
 
     if not documents:
         return ChatResponse(
@@ -412,10 +410,16 @@ def answer_question(
             citations=[],
         )
 
+    answer = str(result["answer"]).strip()
+
+    if answer == NO_ANSWER:
+        return ChatResponse(
+            answer=NO_ANSWER,
+            citations=[],
+        )
+
     return ChatResponse(
-        answer=str(
-            result["answer"]
-        ),
+        answer=answer,
         citations=_citations(
             documents
         ),

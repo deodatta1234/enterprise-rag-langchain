@@ -72,9 +72,11 @@ jobs:
       - name: Run retrieval evaluation
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
           WEAVIATE_URL: ${{ secrets.WEAVIATE_URL }}
           WEAVIATE_API_KEY: ${{ secrets.WEAVIATE_API_KEY }}
-          
+          WEAVIATE_COLLECTION: PdfChunk
+
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
           LANGSMITH_TRACING: "true"
           LANGSMITH_PROJECT: enterprise-rag-ci

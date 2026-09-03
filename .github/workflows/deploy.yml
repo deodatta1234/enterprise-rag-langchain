@@ -91,6 +91,10 @@ jobs:
       - name: Run no-answer evaluation
         run: |
           python -m evaluation.no_answer_eval
+      
+      - name: Run generation evaluation
+        run: |
+          python -m evaluation.generation_eval
 
       # ---------------------------------------------------------
       # Azure deployment

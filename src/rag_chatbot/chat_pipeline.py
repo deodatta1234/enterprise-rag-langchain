@@ -240,3 +240,94 @@ def answer_question(
         answer=result["answer"],
         citations=_citations(documents),
     )
+
+def retrieve_documents(
+    question: str,
+    user_groups: list[str],
+    settings: Settings,
+    *,
+    k: int = 5,
+) -> list[Document]:
+    """
+    Retrieve authorized documents from the existing Weaviate collection.
+
+    This function is shared by:
+    - the production RAG chain
+    - offline evaluation
+    """
+
+    if not question.strip():
+        raise ValueError("Question cannot be empty.")
+
+    if not user_groups:
+        raise PermissionError(
+            "User must have at least one authorized group."
+        )
+
+    client = connect_weaviate(settings)
+
+    try:
+        if not client.is_ready():
+            raise ConnectionError("Weaviate is not ready.")
+
+        if not client.collections.exists(
+            settings.collection_name
+        ):
+            raise RuntimeError(
+                f"Weaviate collection "
+                f"'{settings.collection_name}' does not exist."
+            )
+
+        embeddings = create_embeddings(settings)
+
+        query_vector = embeddings.embed_query(question)
+
+        collection = client.collections.use(
+            settings.collection_name
+        )
+
+        access_filter = (
+            Filter.by_property("access_groups")
+            .contains_any(user_groups)
+        )
+
+        response = collection.query.near_vector(
+            near_vector=query_vector,
+            filters=access_filter,
+            limit=k,
+            return_properties=[
+                "text",
+                "document_id",
+                "page_number",
+                "source_file",
+            ],
+        )
+
+        documents: list[Document] = []
+
+        for obj in response.objects:
+            properties = obj.properties
+
+            documents.append(
+                Document(
+                    page_content=str(
+                        properties.get("text", "")
+                    ),
+                    metadata={
+                        "document_id": properties.get(
+                            "document_id", ""
+                        ),
+                        "page_number": properties.get(
+                            "page_number", 0
+                        ),
+                        "source_file": properties.get(
+                            "source_file", ""
+                        ),
+                    },
+                )
+            )
+
+        return documents
+
+    finally:
+        client.close()

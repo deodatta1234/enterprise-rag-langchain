@@ -13,6 +13,7 @@ dependencies = [
     "python-dotenv>=1.0.1",
     "fastapi",
     "uvicorn[standard]",
+    "simsimd"
 ]
 
 [build-system]

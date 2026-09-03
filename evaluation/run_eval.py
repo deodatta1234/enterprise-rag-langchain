@@ -8,8 +8,14 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-from rag_chatbot.chat_pipeline import retrieve_documents
+from rag_chatbot.chat_pipeline import (
+    retrieve_documents_with_resources,
+)
 from rag_chatbot.config import load_settings
+from rag_chatbot.indexing import (
+    connect_weaviate,
+    create_embeddings,
+)
 
 from .retrieval_metrics import (
     RetrievalMetrics,
@@ -22,20 +28,29 @@ from .retrieval_metrics import (
 # ---------------------------------------------------------------------------
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DATASET_PATH = PROJECT_ROOT / "evaluation_dataset.json"
+
+DATASET_PATH = (
+    PROJECT_ROOT
+    / "evaluation_dataset.json"
+)
 
 RETRIEVAL_K = 5
 
-# CI/CD quality gates.
+
+# ---------------------------------------------------------------------------
+# CI/CD quality gates
+# ---------------------------------------------------------------------------
+
+# Current baseline:
 #
-# Your current baseline:
 # Hit@1         = 93.88%
 # Hit@3         = 100.00%
 # Hit@5         = 100.00%
 # MRR           = 0.9660
 # Page Hit Rate = 100.00%
 #
-# We intentionally set the thresholds slightly below the current baseline.
+# Thresholds are intentionally slightly below baseline.
+
 MIN_HIT_AT_3 = 0.98
 MIN_HIT_AT_5 = 0.99
 MIN_MRR = 0.93
@@ -58,6 +73,7 @@ class EvaluationResult:
     hit_at_1: int
     hit_at_3: int
     hit_at_5: int
+
     reciprocal_rank: float
     page_hit: int
 
@@ -86,7 +102,7 @@ def parse_semicolon_field(
     value: Any,
 ) -> list[str]:
     """
-    Convert dataset values into a list of strings.
+    Convert dataset values into a list.
 
     Example:
 
@@ -94,9 +110,11 @@ def parse_semicolon_field(
 
     becomes:
 
-        ["All-Employees", "Managers", "HR"]
-
-    Also supports lists and numeric values.
+        [
+            "All-Employees",
+            "Managers",
+            "HR",
+        ]
     """
 
     if value is None:
@@ -123,12 +141,13 @@ def parse_semicolon_field(
 
 def load_dataset() -> list[dict]:
     """
-    Load evaluation examples from evaluation_dataset.json.
+    Load examples from evaluation_dataset.json.
     """
 
     if not DATASET_PATH.exists():
         raise FileNotFoundError(
-            f"Evaluation dataset not found: {DATASET_PATH}"
+            f"Evaluation dataset not found: "
+            f"{DATASET_PATH}"
         )
 
     with DATASET_PATH.open(
@@ -137,11 +156,17 @@ def load_dataset() -> list[dict]:
     ) as file:
         data = json.load(file)
 
-    examples = data.get("examples")
+    examples = data.get(
+        "examples"
+    )
 
-    if not isinstance(examples, list):
+    if not isinstance(
+        examples,
+        list,
+    ):
         raise ValueError(
-            "evaluation_dataset.json must contain an 'examples' list."
+            "evaluation_dataset.json must "
+            "contain an 'examples' list."
         )
 
     return examples
@@ -151,56 +176,72 @@ def should_run_retrieval_eval(
     example: dict,
 ) -> bool:
     """
-    Run only positive retrieval examples.
+    Run positive retrieval tests only.
 
     We currently skip:
-    - corpus no-answer tests
-    - RBAC unauthorized tests
+    - no-answer examples
+    - RBAC unauthorized examples
 
-    Those will be evaluated separately.
+    Those will get separate evaluators.
     """
 
-    if not example.get("answerable", False):
+    if not example.get(
+        "answerable",
+        False,
+    ):
         return False
 
     test_type = str(
-        example.get("test_type", "")
+        example.get(
+            "test_type",
+            "",
+        )
     ).strip()
 
     if test_type == "rbac_unauthorized":
         return False
 
-    expected_documents = parse_semicolon_field(
-        example.get(
-            "expected_source_documents"
+    expected_documents = (
+        parse_semicolon_field(
+            example.get(
+                "expected_source_documents"
+            )
         )
     )
 
-    return bool(expected_documents)
+    return bool(
+        expected_documents
+    )
 
 
 # ---------------------------------------------------------------------------
-# Individual example evaluation
+# Individual retrieval evaluation
 # ---------------------------------------------------------------------------
 
 def evaluate_example(
     example: dict,
     settings,
+    client,
+    embeddings,
     *,
     k: int = RETRIEVAL_K,
 ) -> EvaluationResult:
     """
-    Run retrieval for one evaluation example and
-    calculate deterministic retrieval metrics.
+    Run retrieval for one example.
+
+    The Weaviate client and embedding client are
+    passed in rather than recreated for every query.
     """
 
     question = str(
         example["question"]
     ).strip()
 
-    user_groups = parse_semicolon_field(
-        example.get(
-            "allowed_user_roles_groups"
+    user_groups = (
+        parse_semicolon_field(
+            example.get(
+                "allowed_user_roles_groups"
+            )
         )
     )
 
@@ -222,22 +263,33 @@ def evaluate_example(
 
     start = time.perf_counter()
 
-    documents = retrieve_documents(
-        question=question,
-        user_groups=user_groups,
-        settings=settings,
-        k=k,
+    documents = (
+        retrieve_documents_with_resources(
+            question=question,
+            user_groups=user_groups,
+            client=client,
+            embeddings=embeddings,
+            collection_name=(
+                settings.collection_name
+            ),
+            k=k,
+        )
     )
 
     latency_ms = (
-        time.perf_counter() - start
+        time.perf_counter()
+        - start
     ) * 1000
 
     metrics: RetrievalMetrics = (
         calculate_retrieval_metrics(
             retrieved_documents=documents,
-            expected_document_ids=expected_documents,
-            expected_pages=expected_pages,
+            expected_document_ids=(
+                expected_documents
+            ),
+            expected_pages=(
+                expected_pages
+            ),
         )
     )
 
@@ -271,13 +323,21 @@ def evaluate_example(
         retrieved_documents=(
             retrieved_document_ids
         ),
-        hit_at_1=metrics.hit_at_1,
-        hit_at_3=metrics.hit_at_3,
-        hit_at_5=metrics.hit_at_5,
+        hit_at_1=(
+            metrics.hit_at_1
+        ),
+        hit_at_3=(
+            metrics.hit_at_3
+        ),
+        hit_at_5=(
+            metrics.hit_at_5
+        ),
         reciprocal_rank=(
             metrics.reciprocal_rank
         ),
-        page_hit=metrics.page_hit,
+        page_hit=(
+            metrics.page_hit
+        ),
         latency_ms=latency_ms,
     )
 
@@ -289,10 +349,6 @@ def evaluate_example(
 def print_example_result(
     result: EvaluationResult,
 ) -> None:
-    """
-    Print metrics for one evaluation example.
-    """
-
     print("=" * 80)
 
     print(
@@ -314,9 +370,11 @@ def print_example_result(
         f"Hit@1={result.hit_at_1} | "
         f"Hit@3={result.hit_at_3} | "
         f"Hit@5={result.hit_at_5} | "
-        f"MRR={result.reciprocal_rank:.3f} | "
+        f"MRR="
+        f"{result.reciprocal_rank:.3f} | "
         f"PageHit={result.page_hit} | "
-        f"Latency={result.latency_ms:.0f} ms"
+        f"Latency="
+        f"{result.latency_ms:.0f} ms"
     )
 
 
@@ -329,40 +387,61 @@ def calculate_aggregate_results(
 
     if not results:
         raise ValueError(
-            "No retrieval evaluation results were produced."
+            "No retrieval evaluation "
+            "results were produced."
         )
 
-    count = len(results)
+    count = len(
+        results
+    )
 
-    hit_at_1 = sum(
-        result.hit_at_1
-        for result in results
-    ) / count
+    hit_at_1 = (
+        sum(
+            result.hit_at_1
+            for result in results
+        )
+        / count
+    )
 
-    hit_at_3 = sum(
-        result.hit_at_3
-        for result in results
-    ) / count
+    hit_at_3 = (
+        sum(
+            result.hit_at_3
+            for result in results
+        )
+        / count
+    )
 
-    hit_at_5 = sum(
-        result.hit_at_5
-        for result in results
-    ) / count
+    hit_at_5 = (
+        sum(
+            result.hit_at_5
+            for result in results
+        )
+        / count
+    )
 
-    mrr = sum(
-        result.reciprocal_rank
-        for result in results
-    ) / count
+    mrr = (
+        sum(
+            result.reciprocal_rank
+            for result in results
+        )
+        / count
+    )
 
-    page_hit_rate = sum(
-        result.page_hit
-        for result in results
-    ) / count
+    page_hit_rate = (
+        sum(
+            result.page_hit
+            for result in results
+        )
+        / count
+    )
 
-    average_latency_ms = sum(
-        result.latency_ms
-        for result in results
-    ) / count
+    average_latency_ms = (
+        sum(
+            result.latency_ms
+            for result in results
+        )
+        / count
+    )
 
     return AggregateMetrics(
         example_count=count,
@@ -370,21 +449,23 @@ def calculate_aggregate_results(
         hit_at_3=hit_at_3,
         hit_at_5=hit_at_5,
         mrr=mrr,
-        page_hit_rate=page_hit_rate,
-        average_latency_ms=average_latency_ms,
+        page_hit_rate=(
+            page_hit_rate
+        ),
+        average_latency_ms=(
+            average_latency_ms
+        ),
     )
 
 
 def print_aggregate_results(
     metrics: AggregateMetrics,
 ) -> None:
-    """
-    Print the final retrieval evaluation summary.
-    """
-
     print()
     print("#" * 80)
-    print("RETRIEVAL EVALUATION SUMMARY")
+    print(
+        "RETRIEVAL EVALUATION SUMMARY"
+    )
     print("#" * 80)
 
     print(
@@ -431,31 +512,41 @@ def check_quality_gate(
     metrics: AggregateMetrics,
 ) -> list[str]:
     """
-    Compare aggregate metrics against CI/CD thresholds.
+    Return quality-gate failures.
 
-    Returns a list of failure messages.
-
-    An empty list means the quality gate passed.
+    Empty list = PASS.
     """
 
     failures: list[str] = []
 
-    if metrics.hit_at_3 < MIN_HIT_AT_3:
+    if (
+        metrics.hit_at_3
+        < MIN_HIT_AT_3
+    ):
         failures.append(
-            f"Hit@3 = {metrics.hit_at_3:.2%}, "
-            f"required >= {MIN_HIT_AT_3:.2%}"
+            f"Hit@3 = "
+            f"{metrics.hit_at_3:.2%}, "
+            f"required >= "
+            f"{MIN_HIT_AT_3:.2%}"
         )
 
-    if metrics.hit_at_5 < MIN_HIT_AT_5:
+    if (
+        metrics.hit_at_5
+        < MIN_HIT_AT_5
+    ):
         failures.append(
-            f"Hit@5 = {metrics.hit_at_5:.2%}, "
-            f"required >= {MIN_HIT_AT_5:.2%}"
+            f"Hit@5 = "
+            f"{metrics.hit_at_5:.2%}, "
+            f"required >= "
+            f"{MIN_HIT_AT_5:.2%}"
         )
 
     if metrics.mrr < MIN_MRR:
         failures.append(
-            f"MRR = {metrics.mrr:.4f}, "
-            f"required >= {MIN_MRR:.4f}"
+            f"MRR = "
+            f"{metrics.mrr:.4f}, "
+            f"required >= "
+            f"{MIN_MRR:.4f}"
         )
 
     if (
@@ -483,9 +574,13 @@ def main() -> None:
 
     examples = load_dataset()
 
-    results: list[EvaluationResult] = []
+    results: list[
+        EvaluationResult
+    ] = []
 
-    evaluation_errors: list[str] = []
+    evaluation_errors: list[
+        str
+    ] = []
 
     print(
         f"Loaded {len(examples)} "
@@ -493,129 +588,224 @@ def main() -> None:
     )
 
     print(
-        f"Retrieval k = {RETRIEVAL_K}"
+        f"Retrieval k = "
+        f"{RETRIEVAL_K}"
     )
 
-    for example in examples:
+    # -----------------------------------------------------------------------
+    # Create shared resources ONCE
+    # -----------------------------------------------------------------------
 
-        if not should_run_retrieval_eval(
-            example
+    print(
+        "Connecting to Weaviate..."
+    )
+
+    client = connect_weaviate(
+        settings
+    )
+
+    try:
+        if not client.is_ready():
+            raise ConnectionError(
+                "Weaviate is not ready."
+            )
+
+        if not client.collections.exists(
+            settings.collection_name
         ):
-            continue
-
-        try:
-            result = evaluate_example(
-                example=example,
-                settings=settings,
-                k=RETRIEVAL_K,
+            raise RuntimeError(
+                f"Weaviate collection "
+                f"'{settings.collection_name}' "
+                f"does not exist."
             )
 
-            results.append(result)
+        print(
+            "Weaviate connection ready."
+        )
 
-            print_example_result(
-                result
-            )
+        print(
+            "Creating embeddings client..."
+        )
 
-        except Exception as error:
-            example_id = str(
-                example.get(
-                    "id",
-                    "unknown",
+        embeddings = create_embeddings(
+            settings
+        )
+
+        print(
+            "Starting retrieval evaluation..."
+        )
+
+        # -------------------------------------------------------------------
+        # Run all evaluation examples using the same resources
+        # -------------------------------------------------------------------
+
+        for example in examples:
+
+            if not should_run_retrieval_eval(
+                example
+            ):
+                continue
+
+            try:
+                result = (
+                    evaluate_example(
+                        example=example,
+                        settings=settings,
+                        client=client,
+                        embeddings=embeddings,
+                        k=RETRIEVAL_K,
+                    )
                 )
-            )
 
-            question = str(
-                example.get(
-                    "question",
-                    "",
+                results.append(
+                    result
                 )
-            )
 
-            error_message = (
-                f"{example_id}: {error}"
-            )
+                print_example_result(
+                    result
+                )
 
-            evaluation_errors.append(
-                error_message
-            )
+            except Exception as error:
+                example_id = str(
+                    example.get(
+                        "id",
+                        "unknown",
+                    )
+                )
 
-            print("=" * 80)
-            print(
-                f"{example_id} FAILED"
-            )
-            print(
-                f"Question: {question}"
-            )
-            print(
-                f"Error: {error}"
-            )
+                question = str(
+                    example.get(
+                        "question",
+                        "",
+                    )
+                )
+
+                error_message = (
+                    f"{example_id}: "
+                    f"{error}"
+                )
+
+                evaluation_errors.append(
+                    error_message
+                )
+
+                print("=" * 80)
+
+                print(
+                    f"{example_id} FAILED"
+                )
+
+                print(
+                    f"Question: "
+                    f"{question}"
+                )
+
+                print(
+                    f"Error: "
+                    f"{error}"
+                )
+
+    finally:
+        print(
+            "Closing Weaviate connection."
+        )
+
+        client.close()
+
+    # -----------------------------------------------------------------------
+    # No successful evaluations
+    # -----------------------------------------------------------------------
 
     if not results:
         print()
+
         print(
-            "ERROR: No retrieval examples "
-            "were evaluated."
+            "ERROR: No retrieval "
+            "examples were evaluated."
         )
 
-        raise SystemExit(1)
+        raise SystemExit(
+            1
+        )
 
-    metrics = calculate_aggregate_results(
-        results
+    # -----------------------------------------------------------------------
+    # Aggregate results
+    # -----------------------------------------------------------------------
+
+    metrics = (
+        calculate_aggregate_results(
+            results
+        )
     )
 
     print_aggregate_results(
         metrics
     )
 
-    # ---------------------------------------------------------------
+    # -----------------------------------------------------------------------
     # Evaluation execution errors
-    # ---------------------------------------------------------------
+    # -----------------------------------------------------------------------
 
     if evaluation_errors:
         print()
         print("#" * 80)
-        print("EVALUATION ERRORS")
+        print(
+            "EVALUATION ERRORS"
+        )
         print("#" * 80)
 
-        for error in evaluation_errors:
+        for error in (
+            evaluation_errors
+        ):
             print(
                 f"- {error}"
             )
 
-    # ---------------------------------------------------------------
+    # -----------------------------------------------------------------------
     # Quality gate
-    # ---------------------------------------------------------------
+    # -----------------------------------------------------------------------
 
-    quality_failures = check_quality_gate(
-        metrics
+    quality_failures = (
+        check_quality_gate(
+            metrics
+        )
     )
 
     if evaluation_errors:
         quality_failures.append(
             f"{len(evaluation_errors)} "
-            f"evaluation example(s) failed "
-            f"to execute."
+            f"evaluation example(s) "
+            f"failed to execute."
         )
 
     print()
     print("#" * 80)
-    print("QUALITY GATE")
+    print(
+        "QUALITY GATE"
+    )
     print("#" * 80)
 
     if quality_failures:
+        print(
+            "FAILED"
+        )
 
-        print("FAILED")
-
-        for failure in quality_failures:
+        for failure in (
+            quality_failures
+        ):
             print(
                 f"- {failure}"
             )
 
-        # GitHub Actions interprets exit code 1
-        # as a failed CI/CD step.
-        raise SystemExit(1)
+        # Exit code 1 makes the
+        # GitHub Actions step fail.
+        raise SystemExit(
+            1
+        )
 
-    print("PASSED")
+    print(
+        "PASSED"
+    )
 
     print(
         f"Hit@3 >= "

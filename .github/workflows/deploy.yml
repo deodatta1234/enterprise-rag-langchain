@@ -80,21 +80,9 @@ jobs:
       # RAG quality gates
       # ---------------------------------------------------------
 
-      - name: Run retrieval evaluation
+      - name: Run RAG evaluation suite
         run: |
-          python -m evaluation.run_eval
-
-      - name: Run RBAC evaluation
-        run: |
-          python -m evaluation.rbac_eval
-
-      - name: Run no-answer evaluation
-        run: |
-          python -m evaluation.no_answer_eval
-      
-      - name: Run generation evaluation
-        run: |
-          python -m evaluation.generation_eval
+          python -m evaluation.run_all
 
       # ---------------------------------------------------------
       # Azure deployment

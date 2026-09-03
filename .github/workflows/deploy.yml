@@ -69,6 +69,21 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e .
 
+      - name: Check evaluation environment
+        env:
+          WEAVIATE_URL: ${{ secrets.WEAVIATE_URL }}
+          WEAVIATE_API_KEY: ${{ secrets.WEAVIATE_API_KEY }}
+          WEAVIATE_COLLECTION: PdfChunk
+
+        run: |
+          python - <<'PY'
+          import os
+
+          print("WEAVIATE_URL present:", bool(os.getenv("WEAVIATE_URL")))
+          print("WEAVIATE_API_KEY present:", bool(os.getenv("WEAVIATE_API_KEY")))
+          print("WEAVIATE_COLLECTION:", os.getenv("WEAVIATE_COLLECTION"))
+          PY
+
       - name: Run retrieval evaluation
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

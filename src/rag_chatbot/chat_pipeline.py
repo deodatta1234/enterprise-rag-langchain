@@ -8,10 +8,12 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 from langchain_openai import ChatOpenAI
-from weaviate.classes.query import Filter
+from langsmith import traceable
+from weaviate.classes.query import Filter, HybridFusion, MetadataQuery
 
-from .config import Settings
+from .config import Settings, load_settings
 from .indexing import connect_weaviate, create_embeddings
+from .reranking import rerank_documents
 
 
 NO_ANSWER = (
@@ -80,6 +82,13 @@ def _citations(
     )
 
 
+@traceable(
+    name="authorized_retrieval",
+    process_inputs=lambda inputs: {
+        key: inputs[key] for key in ("question", "user_groups", "collection_name", "k")
+        if key in inputs
+    },
+)
 def retrieve_documents_with_resources(
     question: str,
     user_groups: list[str],
@@ -88,10 +97,12 @@ def retrieve_documents_with_resources(
     embeddings: Any,
     collection_name: str,
     k: int = 5,
+    settings: Settings | None = None,
+    reranker: Any = None,
 ) -> list[Document]:
     """
-    Retrieve authorized documents using an existing
-    Weaviate client and embeddings instance.
+    Retrieve authorized candidates with hybrid search, then rerank locally.
+    k is the final context size; retrieval_candidates controls the first stage.
 
     This is the core retrieval implementation.
 
@@ -111,6 +122,11 @@ def retrieve_documents_with_resources(
             "User must have at least one authorized group."
         )
 
+    if k < 1:
+        raise ValueError("k must be positive.")
+    settings = settings if settings is not None else load_settings()
+    candidate_limit = max(k, settings.retrieval_candidates) if settings.rerank_enabled else k
+
     collection = client.collections.use(
         collection_name
     )
@@ -127,19 +143,26 @@ def retrieve_documents_with_resources(
         )
     )
 
-    response = (
-        collection.query.near_vector(
-            near_vector=query_vector,
-            filters=access_filter,
-            limit=k,
-            return_properties=[
-                "text",
-                "document_id",
-                "page_number",
-                "source_file",
-            ],
-        )
+    query_options = dict(
+        filters=access_filter,
+        limit=candidate_limit,
+        return_properties=["text", "document_id", "page_number", "source_file"],
     )
+    if settings.retrieval_mode == "hybrid":
+        response = collection.query.hybrid(
+            query=question,
+            vector=query_vector,
+            alpha=settings.hybrid_alpha,
+            query_properties=["text", "document_id"],
+            fusion_type=HybridFusion.RELATIVE_SCORE,
+            return_metadata=MetadataQuery(score=True),
+            **query_options,
+        )
+    else:
+        response = collection.query.near_vector(
+            near_vector=query_vector,
+            **query_options,
+        )
 
     documents: list[Document] = []
 
@@ -148,6 +171,8 @@ def retrieve_documents_with_resources(
             obj.properties
             or {}
         )
+        if not str(properties.get("text", "")).strip():
+            continue
 
         document = Document(
             page_content=str(
@@ -181,8 +206,15 @@ def retrieve_documents_with_resources(
         documents.append(
             document
         )
+        document.metadata["retrieval_rank"] = len(documents)
+        if settings.retrieval_mode == "hybrid":
+            score = getattr(getattr(obj, "metadata", None), "score", None)
+            if score is not None:
+                document.metadata["hybrid_score"] = float(score)
 
-    return documents
+    if settings.rerank_enabled:
+        return rerank_documents(question, documents, settings, k=k, reranker=reranker)
+    return documents[:k]
 
 
 def retrieve_documents(
@@ -245,6 +277,7 @@ def retrieve_documents(
                 settings.collection_name
             ),
             k=k,
+            settings=settings,
         )
 
     finally:
@@ -263,7 +296,8 @@ def build_rag_chain(
 
     question
         -> embedding
-        -> RBAC-filtered Weaviate retrieval
+        -> RBAC-filtered hybrid retrieval
+        -> local cross-encoder reranking
         -> prompt
         -> LLM
         -> answer
@@ -287,6 +321,7 @@ def build_rag_chain(
                     settings.collection_name
                 ),
                 k=k,
+                settings=settings,
             )
         )
 

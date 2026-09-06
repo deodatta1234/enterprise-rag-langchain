@@ -273,6 +273,7 @@ def evaluate_example(
                 settings.collection_name
             ),
             k=k,
+            settings=settings,
         )
     )
 

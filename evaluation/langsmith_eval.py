@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import argparse
 import json
+import os
 import re
 import time
+from dataclasses import replace
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
@@ -10,13 +15,14 @@ from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
-from langsmith import Client
+from langsmith import Client, tracing_context
 
 from rag_chatbot.chat_pipeline import (
     NO_ANSWER,
     retrieve_documents_with_resources,
 )
-from rag_chatbot.config import load_settings
+from rag_chatbot.config import Settings, load_settings
+from rag_chatbot.reranking import get_reranker
 from rag_chatbot.indexing import (
     connect_weaviate,
     create_embeddings,
@@ -41,27 +47,12 @@ RETRIEVAL_K = 5
 # We therefore reuse these resources instead of reconnecting for every row.
 # ---------------------------------------------------------------------------
 
-load_dotenv()
-
-settings = load_settings()
-
-weaviate_client = connect_weaviate(
-    settings
-)
-
-embeddings = create_embeddings(
-    settings
-)
-
-generation_model = ChatOpenAI(
-    model=settings.chat_model,
-    temperature=0,
-)
-
-judge_model = ChatOpenAI(
-    model=settings.chat_model,
-    temperature=0,
-)
+# Initialized by main(), so importing evaluators never connects to services.
+settings: Settings
+weaviate_client: Any
+embeddings: Any
+judge_model: Any
+generation_chain: Any
 
 
 # ---------------------------------------------------------------------------
@@ -196,13 +187,6 @@ generation_prompt = (
 )
 
 
-generation_chain = (
-    generation_prompt
-    | generation_model
-    | StrOutputParser()
-)
-
-
 # ---------------------------------------------------------------------------
 # LangSmith target
 # ---------------------------------------------------------------------------
@@ -248,6 +232,7 @@ def target(
                 settings.collection_name
             ),
             k=RETRIEVAL_K,
+            settings=settings,
         )
     )
 
@@ -330,6 +315,9 @@ def target(
                     "page_number"
                 )
             ),
+            "retrieval_rank": document.metadata.get("retrieval_rank"),
+            "hybrid_score": document.metadata.get("hybrid_score"),
+            "rerank_score": document.metadata.get("rerank_score"),
         }
         for document in documents
     ]
@@ -1160,86 +1148,145 @@ def total_latency_evaluator(
 # Run LangSmith experiment
 # ---------------------------------------------------------------------------
 
-def main() -> None:
+VARIANTS = ("baseline", "hybrid", "hybrid-rerank")
 
-    client = Client()
 
-    print(
-        f"Running LangSmith experiment "
-        f"on dataset: {DATASET_NAME}"
+def variant_settings(base: Settings, variant: str) -> Settings:
+    """Keep models and corpus fixed while changing only the retrieval strategy."""
+    if variant not in VARIANTS:
+        raise ValueError(f"Unknown evaluation variant: {variant}")
+    return replace(
+        base,
+        retrieval_mode="vector" if variant == "baseline" else "hybrid",
+        rerank_enabled=variant == "hybrid-rerank",
     )
 
+
+def experiment_metadata(config: Settings, variant: str) -> dict[str, Any]:
+    return {
+        "variant": variant,
+        "retrieval_k": RETRIEVAL_K,
+        "retrieval_mode": config.retrieval_mode,
+        "candidate_count": max(RETRIEVAL_K, config.retrieval_candidates)
+        if config.rerank_enabled else RETRIEVAL_K,
+        "hybrid_alpha": config.hybrid_alpha if config.retrieval_mode == "hybrid" else None,
+        "hybrid_fusion": "relative_score" if config.retrieval_mode == "hybrid" else None,
+        "rerank_enabled": config.rerank_enabled,
+        "reranker_model": config.reranker_model if config.rerank_enabled else None,
+        "reranker_device": config.reranker_device if config.rerank_enabled else None,
+        "reranker_batch_size": config.reranker_batch_size if config.rerank_enabled else None,
+        "reranker_max_length": 512 if config.rerank_enabled else None,
+        "collection": config.collection_name,
+        "chat_model": config.chat_model,
+        "embedding_model": config.embedding_model,
+        "latency_policy": "reranker preloaded; retrieval includes embedding and reranking",
+    }
+
+
+def main() -> None:
+    global settings, weaviate_client, embeddings, judge_model, generation_chain
+
+    parser = argparse.ArgumentParser(description="Run separate LangSmith retrieval experiments.")
+    parser.add_argument("--variant", choices=(*VARIANTS, "all"), default="hybrid-rerank")
+    parser.add_argument("--dataset", default=DATASET_NAME)
+    parser.add_argument("--dataset-version", help="LangSmith dataset timestamp or version tag.")
+    parser.add_argument("--limit", type=int, help="Use a small sample for a smoke evaluation.")
+    parser.add_argument("--output-dir", type=Path, default=Path("evaluation/results"))
+    args = parser.parse_args()
+    if args.limit is not None and args.limit < 1:
+        parser.error("--limit must be positive")
+
+    load_dotenv()
+    base_settings = load_settings()
+    client = Client()
+    # Fetch once: every variant in this comparison uses identical example objects.
+    version = args.dataset_version or datetime.now(timezone.utc).isoformat()
+    examples = list(client.list_examples(dataset_name=args.dataset, as_of=version))
+    examples.sort(key=lambda example: str(example.id))
+    if args.limit is not None:
+        examples = examples[:args.limit]
+    if not examples:
+        raise ValueError("The selected dataset version contains no examples.")
+
+    variants = VARIANTS if args.variant == "all" else (args.variant,)
+    comparison_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    weaviate_client = connect_weaviate(base_settings)
     try:
+        embeddings = create_embeddings(base_settings)
+        generation_model = ChatOpenAI(model=base_settings.chat_model, temperature=0)
+        judge_model = ChatOpenAI(model=base_settings.chat_model, temperature=0)
+        generation_chain = generation_prompt | generation_model | StrOutputParser()
 
-        results = client.evaluate(
-            target,
-            data=DATASET_NAME,
+        for variant in variants:
+            settings = variant_settings(base_settings, variant)
+            prefix = f"{EXPERIMENT_PREFIX}-{variant}"
+            # Ancillary traces cannot fall into an existing baseline project.
+            # evaluate() creates a fresh experiment project and routes target traces there.
+            os.environ["LANGSMITH_PROJECT"] = f"{prefix}-evaluation"
+            metadata = {
+                **experiment_metadata(settings, variant),
+                "comparison_id": comparison_id,
+                "git_commit": os.getenv("GITHUB_SHA"),
+                "github_run_id": os.getenv("GITHUB_RUN_ID"),
+                "github_run_attempt": os.getenv("GITHUB_RUN_ATTEMPT"),
+                "dataset_version_requested": version,
+                "example_count": len(examples),
+                "example_ids": [str(example.id) for example in examples],
+            }
+            if settings.rerank_enabled:
+                get_reranker(settings)  # Exclude model download/loading from query latency.
 
-            evaluators=[
-                # Retrieval
-                hit_at_1_evaluator,
-                hit_at_3_evaluator,
-                hit_at_5_evaluator,
-                mrr_evaluator,
-                page_hit_evaluator,
+            print(f"Running {variant} on {len(examples)} examples; prefix: {prefix}")
+            with tracing_context(project_name=f"{prefix}-evaluation", enabled=True):
+                results = client.evaluate(
+                    target,
+                    data=examples,
+                    evaluators=[
+                        hit_at_1_evaluator, hit_at_3_evaluator, hit_at_5_evaluator,
+                        mrr_evaluator, page_hit_evaluator, rbac_evaluator,
+                        no_answer_evaluator, citation_document_evaluator,
+                        citation_page_evaluator, answer_correctness_evaluator,
+                        faithfulness_evaluator, retrieval_latency_evaluator,
+                        total_latency_evaluator,
+                    ],
+                    experiment_prefix=prefix,
+                    description=f"{variant}: authorized retrieval and generation comparison.",
+                    max_concurrency=0,
+                    metadata=metadata,
+                )
 
-                # Security / robustness
-                rbac_evaluator,
-                no_answer_evaluator,
-
-                # Generation citations
-                citation_document_evaluator,
-                citation_page_evaluator,
-
-                # LLM-as-a-judge
-                answer_correctness_evaluator,
-                faithfulness_evaluator,
-
-                # Performance
-                retrieval_latency_evaluator,
-                total_latency_evaluator,
-            ],
-
-            experiment_prefix=(
-                EXPERIMENT_PREFIX
-            ),
-
-            description=(
-                "Enterprise Chain RAG evaluation: "
-                "retrieval, RBAC, no-answer, "
-                "generation quality, citations "
-                "and performance."
-            ),
-
-            # Start sequentially.
-            # This is easier on OpenAI/Weaviate rate limits.
-            max_concurrency=0,
-
-            metadata={
-                "retrieval_k": (
-                    RETRIEVAL_K
-                ),
-                "collection": (
-                    settings.collection_name
-                ),
-                "chat_model": (
-                    settings.chat_model
-                ),
-            },
-        )
-
-        print()
-        print(
-            "LangSmith experiment complete."
-        )
-
-        # ExperimentResults exposes experiment metadata/results.
-        print(
-            results
-        )
-
+            rows = []
+            for row in results:
+                run = row["run"]
+                feedback = row.get("evaluation_results", {}).get("results", [])
+                rows.append({
+                    "example_id": str(row["example"].id),
+                    "run_id": str(run.id),
+                    "error": run.error,
+                    "metrics": {item.key: item.score for item in feedback},
+                })
+            metric_names = {key for row in rows for key in row["metrics"]}
+            averages = {}
+            for key in sorted(metric_names):
+                values = [row["metrics"][key] for row in rows
+                          if isinstance(row["metrics"].get(key), (int, float))]
+                if values:
+                    averages[key] = {"mean": sum(values) / len(values), "count": len(values)}
+            report = {
+                "experiment_name": results.experiment_name,
+                "metadata": metadata,
+                "error_count": sum(bool(row["error"]) for row in rows),
+                "metrics": averages,
+                "results": rows,
+            }
+            output = args.output_dir / f"{comparison_id}-{variant}.json"
+            output.write_text(json.dumps(report, indent=2, default=str) + "\n")
+            print(f"LangSmith experiment: {results.experiment_name}")
+            print(f"Local metrics: {output}")
+            if report["error_count"]:
+                raise RuntimeError(f"{variant}: {report['error_count']} examples failed; see {output}")
     finally:
-
         weaviate_client.close()
 
 

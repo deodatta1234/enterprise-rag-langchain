@@ -106,6 +106,7 @@ def evaluate_rbac_example(
     client,
     embeddings,
     collection_name: str,
+    settings=None,
     k: int = RETRIEVAL_K,
 ) -> RBACResult:
 
@@ -133,6 +134,7 @@ def evaluate_rbac_example(
         client=client,
         embeddings=embeddings,
         collection_name=collection_name,
+        settings=settings,
         k=k,
     )
 
@@ -268,6 +270,7 @@ def main() -> None:
                         settings.collection_name
                     ),
                     k=RETRIEVAL_K,
+                    settings=settings,
                 )
 
                 results.append(result)

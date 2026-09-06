@@ -7,3 +7,4 @@ langchain-weaviate
 weaviate-client
 python-dotenv>=1.0.1
 langsmith
+sentence-transformers>=3.4,<6

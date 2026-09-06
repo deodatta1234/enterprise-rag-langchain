@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
@@ -10,16 +11,25 @@ from pydantic import BaseModel, Field
 
 from .chat_pipeline import answer_question
 from .config import load_settings
+from .reranking import get_reranker
 
 
 load_dotenv()
+settings = load_settings()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Load the bundled model once per worker before accepting user requests.
+    if settings.rerank_enabled:
+        get_reranker(settings)
+    yield
 
 app = FastAPI(
     title="Enterprise RAG API",
     version="0.1.0",
+    lifespan=lifespan,
 )
-
-settings = load_settings()
 
 
 ROLE_TO_RAG_GROUPS = {

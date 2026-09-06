@@ -24,7 +24,7 @@ jobs:
 
       LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
       LANGSMITH_ENDPOINT: ${{ secrets.LANGSMITH_ENDPOINT }}
-      LANGSMITH_TRACING: "true"
+      LANGSMITH_TRACING: "false"
       LANGSMITH_PROJECT: enterprise-rag-ci
 
     steps:
@@ -84,6 +84,12 @@ jobs:
         run: |
           python -m evaluation.run_all
 
+      # Disabled while deploying without tracing; credentials remain configured.
+      # This runner explicitly enables tracing, so it must also stay disabled.
+      # - name: Evaluate deployment candidate in LangSmith
+      #   run: |
+      #     python -m evaluation.langsmith_eval --variant hybrid-rerank
+
       # ---------------------------------------------------------
       # Azure deployment
       # Only reached if ALL evaluations pass
@@ -124,7 +130,8 @@ jobs:
           az containerapp update \
             --name "${{ vars.CONTAINER_APP_NAME }}" \
             --resource-group "${{ vars.RESOURCE_GROUP }}" \
-            --image "${{ vars.ACR_NAME }}.azurecr.io/${{ vars.IMAGE_NAME }}:${{ github.sha }}"
+            --image "${{ vars.ACR_NAME }}.azurecr.io/${{ vars.IMAGE_NAME }}:${{ github.sha }}" \
+            --set-env-vars LANGSMITH_TRACING=false
 
       - name: Show deployed image
         run: |

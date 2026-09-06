@@ -149,6 +149,7 @@ def main() -> None:
                     settings.collection_name
                 ),
                 k=RETRIEVAL_K,
+                settings=settings,
             )
 
             retrieval_ms = (

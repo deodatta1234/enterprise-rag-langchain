@@ -51,7 +51,7 @@ class RetrievalTests(unittest.TestCase):
         args = self.query.hybrid.call_args.kwargs
         self.assertEqual(args["query"], "leave policy")
         self.assertEqual(args["vector"], [0.1, 0.2])
-        self.assertEqual(args["limit"], 20)
+        self.assertEqual(args["limit"], 10)
         self.assertEqual(args["alpha"], 0.5)
         self.assertEqual(args["fusion_type"], HybridFusion.RELATIVE_SCORE)
         self.assertEqual(args["filters"].model_dump(),

@@ -23,7 +23,7 @@ class Settings:
     chunk_overlap: int
     retrieval_mode: str = "hybrid"
     hybrid_alpha: float = 0.5
-    retrieval_candidates: int = 20
+    retrieval_candidates: int = 10
     rerank_enabled: bool = True
     reranker_model: str = "cross-encoder/ms-marco-MiniLM-L6-v2"
     reranker_device: str = "cpu"
@@ -71,7 +71,7 @@ def load_settings() -> Settings:
         chunk_overlap=int(os.getenv("RAG_CHUNK_OVERLAP", "150")),
         retrieval_mode=os.getenv("RAG_RETRIEVAL_MODE", "hybrid").strip().lower(),
         hybrid_alpha=float(os.getenv("RAG_HYBRID_ALPHA", "0.5")),
-        retrieval_candidates=int(os.getenv("RAG_RETRIEVAL_CANDIDATES", "20")),
+        retrieval_candidates=int(os.getenv("RAG_RETRIEVAL_CANDIDATES", "10")),
         rerank_enabled=_env_bool("RAG_RERANK_ENABLED", "true"),
         reranker_model=os.getenv(
             "RAG_RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L6-v2"

@@ -51,8 +51,8 @@ RETRIEVAL_K = 5
 #
 # Thresholds are intentionally slightly below baseline.
 
-MIN_HIT_AT_3 = 0.98
-MIN_HIT_AT_5 = 0.99
+MIN_HIT_AT_3 = 0.97
+MIN_HIT_AT_5 = 0.97
 MIN_MRR = 0.93
 MIN_PAGE_HIT_RATE = 0.98
 

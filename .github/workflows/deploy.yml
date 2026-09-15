@@ -80,11 +80,9 @@ jobs:
       # RAG quality gates
       # ---------------------------------------------------------
 
-      - name: Run five generation-evaluation samples
-        env:
-          GENERATION_EVAL_LIMIT: "5"
+      - name: Run RAG evaluation suite
         run: |
-          python -m evaluation.generation_eval
+          python -m evaluation.run_all
 
       # Disabled while deploying without tracing; credentials remain configured.
       # This runner explicitly enables tracing, so it must also stay disabled.

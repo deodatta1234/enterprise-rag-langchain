@@ -151,6 +151,28 @@ def format_context(
     )
 
 
+def response_text(
+    content: Any,
+) -> str:
+    """Extract text from either a string or OpenAI content blocks."""
+
+    if isinstance(content, str):
+        return content.strip()
+
+    if isinstance(content, list):
+        text_parts = [
+            part["text"]
+            for part in content
+            if isinstance(part, dict)
+            and isinstance(part.get("text"), str)
+        ]
+
+        if text_parts:
+            return "\n".join(text_parts).strip()
+
+    return str(content).strip()
+
+
 def judge_answer(
     *,
     judge: ChatOpenAI,
@@ -207,9 +229,9 @@ Return ONLY valid JSON:
         prompt
     )
 
-    content = str(
+    content = response_text(
         response.content
-    ).strip()
+    )
 
     # Handle accidental Markdown JSON fences.
     if content.startswith("```"):

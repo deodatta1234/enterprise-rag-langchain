@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import weaviate
+from weaviate.classes.config import Configure, DataType, Property
 from weaviate.classes.init import Auth
 from weaviate.classes.query import Filter
 
@@ -36,8 +37,29 @@ def rebuild_collection(
     client: weaviate.WeaviateClient,
     collection_name: str,
 ) -> None:
+    """Replace a collection with the schema required by the RAG pipeline."""
+
     if client.collections.exists(collection_name):
         client.collections.delete(collection_name)
+
+    client.collections.create(
+        collection_name,
+        # LangChain supplies embeddings when chunks are inserted.
+        vector_config=Configure.Vectors.self_provided(),
+        properties=[
+            Property(name="text", data_type=DataType.TEXT),
+            Property(name="document_id", data_type=DataType.TEXT),
+            Property(name="document_checksum", data_type=DataType.TEXT),
+            Property(name="source_file", data_type=DataType.TEXT),
+            Property(name="source_path", data_type=DataType.TEXT),
+            Property(name="page_number", data_type=DataType.INT),
+            Property(
+                name="access_groups",
+                data_type=DataType.TEXT_ARRAY,
+            ),
+            Property(name="chunk_number", data_type=DataType.INT),
+        ],
+    )
 
 
 def delete_document_chunks(

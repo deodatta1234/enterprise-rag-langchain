@@ -54,7 +54,7 @@ def load_settings() -> Settings:
         pdf_directory=Path(
             os.getenv("RAG_PDF_DIRECTORY", PROJECT_ROOT / "data" / "pdfs")
         ),
-        collection_name=os.getenv("WEAVIATE_COLLECTION", "EnterprisePolicyChunks"),
+        collection_name=os.getenv("WEAVIATE_COLLECTION", "PdfChunk"),
         # WEAVIATE_URI is retained for compatibility with the existing .env.
         weaviate_url=os.getenv("WEAVIATE_URL") or os.getenv("WEAVIATE_URI"),
         weaviate_api_key=os.getenv("WEAVIATE_API_KEY"),

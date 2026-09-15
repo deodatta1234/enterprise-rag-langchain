@@ -469,7 +469,20 @@ def main() -> None:
     finally:
         client.close()
 
+    if errors:
+        print()
+        print("GENERATION EVALUATION ERRORS")
+        print("#" * 80)
+
+        for error in errors:
+            print(
+                f"- {error}"
+            )
+
     if not results:
+        print(
+            "No generation examples completed successfully."
+        )
         raise SystemExit(1)
 
     count = len(

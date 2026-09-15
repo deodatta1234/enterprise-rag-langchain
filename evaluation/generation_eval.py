@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ast
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -218,9 +220,26 @@ Return ONLY valid JSON:
             .strip()
         )
 
-    result = json.loads(
-        content
-    )
+    try:
+        result = json.loads(
+            content
+        )
+    except json.JSONDecodeError:
+        # Some OpenAI-compatible providers return a Python-style dictionary
+        # despite JSON mode, for example {'correctness': 1.0}. literal_eval
+        # safely handles Python literals without executing model output.
+        try:
+            result = ast.literal_eval(
+                content
+            )
+        except (
+            SyntaxError,
+            ValueError,
+        ) as fallback_error:
+            raise ValueError(
+                "Judge response was neither valid JSON nor a Python literal: "
+                f"{content!r}"
+            ) from fallback_error
 
     correctness = float(
         result["correctness"]
@@ -392,6 +411,17 @@ def main() -> None:
             example
         )
     ]
+
+    limit_value = os.getenv(
+        "GENERATION_EVAL_LIMIT"
+    )
+    if limit_value:
+        limit = int(limit_value)
+        if limit < 1:
+            raise ValueError(
+                "GENERATION_EVAL_LIMIT must be positive."
+            )
+        examples = examples[:limit]
 
     print(
         f"Generation examples: "

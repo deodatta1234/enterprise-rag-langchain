@@ -405,6 +405,13 @@ def main() -> None:
     judge = ChatOpenAI(
         model=settings.chat_model,
         temperature=0,
+        # The evaluator parses this response with json.loads(), so request
+        # JSON mode from the model instead of relying on prompt-only output.
+        model_kwargs={
+            "response_format": {
+                "type": "json_object",
+            },
+        },
     )
 
     results: list[
